@@ -1,6 +1,6 @@
 # Testing-Temporal-Dependence-in-Financial-Time-Series
 
-Testing Temporal Dependence in Financial Time Series
+
 This thesis investigates temporal dependence in financial time series using machine learning
 methods. The analysis is challenged by heavy tails and extreme values arising from rare but
 highly significant market movements. The models predict whether a price increase or
