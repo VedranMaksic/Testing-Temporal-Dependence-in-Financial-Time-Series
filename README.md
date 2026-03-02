@@ -14,5 +14,5 @@ indicators as input features. Model performance is evaluated by comparing predic
 outcomes with actual events, and potential directions for further improvement are discussed.
 
 
-Keywords: financial time series, extreme values, heavy tails, technical indicators, machine
+##Keywords: financial time series, extreme values, heavy tails, technical indicators, machine
 learning, prediction
