@@ -1,0 +1,44 @@
+0 1) Skidanje podataka
+python -m src.data.skini_sve --timeframe 1d
+
+0 2)crta graafove svih instrumenata i sprema ih, time frame je hardkodiran 
+python -m src.analysis.plot_instruments  --timeframe 1d
+
+
+1)  Generiranje featurea
+python -m src.data.nap_df_sa_featureima --strategy up10_daily
+
+2) Treniranje modela
+python -m src.train_model --strategy up10_daily 
+--mode static
+--mode rolling  za re treniranje koje je fiksno sa podjelom, po data setu se nakon prvog splita podjele podaci na trecine i onda se trenira u 75 25 omjeru i uvijek se pomice za trecinu
+
+3) Analiza rezultata
+python -m src.analysis.run_analysis --predictions models/up10_daily/predictions.csv
+
+4) Analiza s promjenom thresholda
+python -m src.analysis.run_analysis --predictions models/up10_daily/predictions.csv --sweep
+
+5) Crtaj grafove sa TP i FP
+python -m src.analysis.plot_signals --predictions models/up5_high_vol/predictions.csv --instrument BTC-USD --show_volume	
+
+6) testiranje strategije sa tp i sl za tradeing
+python -m src.analysis.trade_simulation --predictions models/up5_daily_enhanced_all/predictions.csv --threshold 0.3 --tp-atr 3 --sl-atr 1 --horizon 60
+
+7) izracuna koliko kapitala bi bilo najbolje da smo ulozili nakon prve simulacje
+python -m src.analysis.capital_allocation --model models/up5_daily_enhanced_all
+
+8) ulaganje kapitala nakon određivanja njegove podjele i simuliranje real time trade
+python -m src.analysis.portfolio_simulator --model models/up5_daily_enhanced_all --initial-capital 10000
+
+
+######################################################################
+
+Za stvaranje predikcije
+0) mora prvo biti napravljen nap df da se moze istrenirati
+
+1) treniranje modela na cijelom setu podataka
+python -m src.train_final_model --strategy up5_daily_enhanced
+
+2) pokretanje run_daily program se ne vrti svaki dan, run daily je samo za sada za daily strategije ne vrti se stalno nego ga se treba pokrenuti otp svaki dan
+python -m src.production.run_daily

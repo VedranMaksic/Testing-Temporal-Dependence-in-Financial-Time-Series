@@ -1,15 +1,14 @@
-import os
-from typing import Dict, Optional, Tuple
-
 import numpy as np
 import pandas as pd
+from typing import Dict, Optional, Tuple
 
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,
-    confusion_matrix, mean_absolute_error, mean_squared_error, r2_score
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, confusion_matrix,
+    mean_absolute_error, mean_squared_error, r2_score
 )
 
 from src.models.config import Config
@@ -22,22 +21,21 @@ except Exception as e:
     raise RuntimeError("XGBoost is required. Install with: pip install xgboost") from e
 
 
-def ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
-
+# ==========================================================
+# SPLIT
+# ==========================================================
 
 def time_split(df: pd.DataFrame, cfg: Config) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    train = df.loc[cfg.train_start : cfg.train_end].copy()
+    train = df.loc[cfg.train_start: cfg.train_end].copy()
     test = df.loc[cfg.test_start:].copy()
     return train, test
 
 
+# ==========================================================
+# PREPROCESSOR
+# ==========================================================
+
 def _make_ohe():
-    """
-    OneHotEncoder param se razlikuje po verzijama sklearn-a:
-    - starije: sparse=
-    - novije: sparse_output=
-    """
     try:
         return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
     except TypeError:
@@ -45,7 +43,6 @@ def _make_ohe():
 
 
 def build_preprocessor(cfg: Config) -> ColumnTransformer:
-    
     numeric_features = list(cfg.feature_cols)
     categorical_features = ["Instrument"]
 
@@ -55,11 +52,20 @@ def build_preprocessor(cfg: Config) -> ColumnTransformer:
             ("cat", _make_ohe(), categorical_features),
         ],
         remainder="drop",
-        sparse_threshold=0.0,  # forsiraj dense output
+        sparse_threshold=0.0,
     )
 
 
-def eval_classification(y_true: np.ndarray, y_pred: np.ndarray, y_proba: Optional[np.ndarray]) -> Dict[str, float]:
+# ==========================================================
+# METRICS
+# ==========================================================
+
+def eval_classification(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_proba: Optional[np.ndarray]
+) -> Dict[str, float]:
+
     met = {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
@@ -80,10 +86,12 @@ def eval_classification(y_true: np.ndarray, y_pred: np.ndarray, y_proba: Optiona
     met["fp"] = float(cm[0, 1])
     met["fn"] = float(cm[1, 0])
     met["tp"] = float(cm[1, 1])
+
     return met
 
 
 def eval_regression(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
 
@@ -91,7 +99,6 @@ def eval_regression(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     mae = float(mean_absolute_error(y_true, y_pred))
     r2 = float(r2_score(y_true, y_pred))
 
-    # Spearman rank correlation
     try:
         y_true_rank = pd.Series(y_true).rank(method="average").to_numpy()
         y_pred_rank = pd.Series(y_pred).rank(method="average").to_numpy()
@@ -107,9 +114,13 @@ def eval_regression(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     }
 
 
+# ==========================================================
+# MODELS
+# ==========================================================
 
 def build_xgb_clf(cfg: Config) -> Pipeline:
     pre = build_preprocessor(cfg)
+
     return Pipeline([
         ("prep", pre),
         ("clf", XGBClassifier(
@@ -126,22 +137,20 @@ def build_xgb_clf(cfg: Config) -> Pipeline:
 
 
 def build_xgb_reg(cfg: Config, target: str) -> Pipeline:
+
     pre = build_preprocessor(cfg)
 
-    # Odabir kvantila po targetu
     if target.startswith("MaxRet"):
-        quantile_alpha = 0.9   # gornji rep
+        quantile_alpha = 0.9
     elif target.startswith("MinRet"):
-        quantile_alpha = 0.1   # donji rep
+        quantile_alpha = 0.1
     else:
-        quantile_alpha = 0.5   # fallback (median)
+        quantile_alpha = 0.5
 
     return Pipeline([
         ("prep", pre),
         ("reg", XGBRegressor(
-            objective="reg:squarederror",  #za mijenjanje cilja sa squarederror na spearmana to jest na kvantil
-            #objective= "reg:quantileerror",
-            quantile_alpha=quantile_alpha,
+            objective="reg:squarederror",
             n_estimators=900,
             learning_rate=0.03,
             max_depth=4,
@@ -153,9 +162,14 @@ def build_xgb_reg(cfg: Config, target: str) -> Pipeline:
     ])
 
 
+# ==========================================================
+# TRAIN CLASSIFICATION
+# ==========================================================
 
-def train_global_classification(df_all: pd.DataFrame, cfg: Config, out_dir: str) -> None:
-    ensure_dir(out_dir)
+def train_global_classification(
+    df_all: pd.DataFrame,
+    cfg: Config
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     cls_targets = get_cls_targets(cfg)
     reg_targets = get_reg_targets(cfg)
@@ -167,8 +181,11 @@ def train_global_classification(df_all: pd.DataFrame, cfg: Config, out_dir: str)
         raise RuntimeError(f"Too few rows after dropna: {len(df)}")
 
     train_df, test_df = time_split(df, cfg)
+
     if len(train_df) < 500 or len(test_df) < 200:
-        raise RuntimeError(f"Too few rows in train/test: train={len(train_df)} test={len(test_df)}")
+        raise RuntimeError(
+            f"Too few rows in train/test: train={len(train_df)} test={len(test_df)}"
+        )
 
     X_train = train_df[list(cfg.feature_cols) + ["Instrument"]]
     X_test = test_df[list(cfg.feature_cols) + ["Instrument"]]
@@ -177,11 +194,13 @@ def train_global_classification(df_all: pd.DataFrame, cfg: Config, out_dir: str)
     preds_rows = []
 
     for target in cls_targets:
+
         y_train = train_df[target].astype(int).values
         y_test = test_df[target].astype(int).values
 
         pos_train = int(y_train.sum())
         pos_test = int(y_test.sum())
+
         if pos_train < cfg.min_pos_in_train or pos_test < cfg.min_pos_in_test:
             continue
 
@@ -196,14 +215,15 @@ def train_global_classification(df_all: pd.DataFrame, cfg: Config, out_dir: str)
             "task": "classification",
             "target": target,
             "model": "XGBoost",
-            "n_train": int(len(train_df)),
-            "n_test": int(len(test_df)),
+            "n_train": len(train_df),
+            "n_test": len(test_df),
             "pos_train": pos_train,
             "pos_test": pos_test,
         })
+
         metrics_rows.append(met)
 
-        out = pd.DataFrame({
+        preds_rows.append(pd.DataFrame({
             "Date": test_df.index,
             "Instrument": test_df["Instrument"].values,
             "target": target,
@@ -211,26 +231,29 @@ def train_global_classification(df_all: pd.DataFrame, cfg: Config, out_dir: str)
             "y_true": y_test,
             "y_pred": y_pred,
             "y_proba": y_proba,
-        })
-        preds_rows.append(out)
+        }))
 
     metrics_df = pd.DataFrame(metrics_rows)
     preds_df = pd.concat(preds_rows, ignore_index=True) if preds_rows else pd.DataFrame()
 
-    metrics_df.to_csv(os.path.join(out_dir, "classification_metrics.csv"), index=False)
-    preds_df.to_csv(os.path.join(out_dir, "classification_predictions.csv"), index=False)
+    return metrics_df, preds_df
 
 
-def train_global_regression(df_all: pd.DataFrame, cfg: Config, out_dir: str) -> None:
-    ensure_dir(out_dir)
+# ==========================================================
+# TRAIN REGRESSION
+# ==========================================================
+
+def train_global_regression(
+    df_all: pd.DataFrame,
+    cfg: Config
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     reg_targets = get_reg_targets(cfg)
+
     needed = list(cfg.feature_cols) + ["Instrument"] + reg_targets
     df = df_all.dropna(subset=needed).copy()
 
     train_df, test_df = time_split(df, cfg)
-    if len(train_df) < 500 or len(test_df) < 200:
-        raise RuntimeError(f"Too few rows in train/test: train={len(train_df)} test={len(test_df)}")
 
     X_train = train_df[list(cfg.feature_cols) + ["Instrument"]]
     X_test = test_df[list(cfg.feature_cols) + ["Instrument"]]
@@ -239,6 +262,7 @@ def train_global_regression(df_all: pd.DataFrame, cfg: Config, out_dir: str) -> 
     preds_rows = []
 
     for target in reg_targets:
+
         y_train = train_df[target].astype(float).values
         y_test = test_df[target].astype(float).values
 
@@ -252,23 +276,22 @@ def train_global_regression(df_all: pd.DataFrame, cfg: Config, out_dir: str) -> 
             "task": "regression",
             "target": target,
             "model": "XGBoostReg",
-            "n_train": int(len(train_df)),
-            "n_test": int(len(test_df)),
+            "n_train": len(train_df),
+            "n_test": len(test_df),
         })
+
         metrics_rows.append(met)
 
-        out = pd.DataFrame({
+        preds_rows.append(pd.DataFrame({
             "Date": test_df.index,
             "Instrument": test_df["Instrument"].values,
             "target": target,
             "model": "XGBoostReg",
             "y_true": y_test,
             "y_pred": y_pred,
-        })
-        preds_rows.append(out)
+        }))
 
     metrics_df = pd.DataFrame(metrics_rows)
     preds_df = pd.concat(preds_rows, ignore_index=True) if preds_rows else pd.DataFrame()
 
-    metrics_df.to_csv(os.path.join(out_dir, "regression_metrics.csv"), index=False)
-    preds_df.to_csv(os.path.join(out_dir, "regression_predictions.csv"), index=False)
+    return metrics_df, preds_df
