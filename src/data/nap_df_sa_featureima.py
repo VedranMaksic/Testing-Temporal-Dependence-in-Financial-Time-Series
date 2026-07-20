@@ -1,101 +1,144 @@
-import sys
+import argparse
+import importlib
+import pandas as pd
 from pathlib import Path
 
-from src.indicators.jos_dodatnih_feturea import add_more_features
-
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.append(str(ROOT / "src"))
 
-import pandas as pd
+from src.indicators import indikatori
 
-from indicators.indikatori import sma, ema, roc, rsi_wilder, atr_wilder, obv
-from indicators.dodatni_featurei import add_enhanced_features
-
-RAW_PATH = ROOT / "data" / "raw" / "all_instruments_raw.csv"
-
-OUT_DIR = ROOT / "data" / "processed"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-OUT_BASE = OUT_DIR / "all_instruments_features_base.csv"
-OUT_ENH = OUT_DIR / "all_instruments_features_enhanced.csv"
+DATA_RAW = ROOT / "data" / "raw"
+DATA_PROCESSED = ROOT / "data" / "processed"
+DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
 
 
-def load_raw(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, parse_dates=["Date"])
-    df = df.sort_values("Date").set_index("Date")
+# -load strategy
 
-    for c in ["Open", "High", "Low", "Close", "Volume"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    return df
+def load_strategy(strategy_name: str):
+    module = importlib.import_module(f"src.strategies.{strategy_name}")
+    return module.Strategy()
 
 
-def add_base_features_one_instrument(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Base: samo indikatori (bez dodatnih izvedenih featurea)
-    df: DataFrame za jedan instrument (index=Date)
-    """
-    df = df.sort_index().copy()
+# load raw
 
-    # trend
-    df["SMA_10"] = sma(df["Close"], 10)
-    df["SMA_50"] = sma(df["Close"], 50)
-    df["EMA_20"] = ema(df["Close"], 20)
+def load_raw(timeframe: str) -> pd.DataFrame:
 
-    # momentum
-    df["RSI_14"] = rsi_wilder(df["Close"], 14)
-    df["ROC_10"] = roc(df["Close"], 10)
+    raw_dir = DATA_RAW / timeframe
 
-    # volatilnost
-    df["ATR_14"] = atr_wilder(df["High"], df["Low"], df["Close"], 14)
+    files = list(raw_dir.glob("*.csv"))
 
-    # volumen
-    df["OBV"] = obv(df["Close"], df["Volume"])
+    if len(files) == 0:
+        raise FileNotFoundError(f"Nema raw fileova u: {raw_dir}")
 
-    return df
+    all_dfs = []
 
+    for file in files:
 
-def main():
-    if not RAW_PATH.exists():
-        raise FileNotFoundError(
-            f"Nema RAW filea: {RAW_PATH}. Prvo pokreni src/data/skini_sve.py"
+        df = pd.read_csv(file, parse_dates=["Date"])
+
+        instrument = file.stem  # npr AAPL, BTC-USD
+
+        df["Instrument"] = instrument
+
+        all_dfs.append(df)
+
+    df = pd.concat(all_dfs)
+
+    # MultiIndex
+    df = df.set_index(["Instrument", "Date"])
+    df = df.sort_index()
+
+    # timezone fix (za intraday)
+    dates = df.index.get_level_values("Date")
+
+    if hasattr(dates, "tz") and dates.tz is not None:
+        df = df.copy()
+        df.index = pd.MultiIndex.from_arrays(
+            [
+                df.index.get_level_values("Instrument"),
+                dates.tz_localize(None),
+            ],
+            names=["Instrument", "Date"]
         )
 
-    df_all = load_raw(RAW_PATH)
+    # numeric sigurnost
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    if "Instrument" not in df_all.columns:
-        raise ValueError("RAW dataset nema stupac 'Instrument'.")
+    return df
 
-    out_base_parts = []
-    out_enh_parts = []
 
-    for instr, df_instr in df_all.groupby("Instrument"):
-        # 1) base
-        df_base = add_base_features_one_instrument(df_instr)
+# apply f
 
-        # 2) enhanced = base + dodatni featurei
-        df_enh = add_enhanced_features(df_base.copy())
+def apply_features(df: pd.DataFrame, strategy) -> pd.DataFrame:
 
-        #3) ovdje se dodaju svi dodatni featurei
-        df_enh = add_more_features(df_enh, lag=1) 
+    df = df.copy()
 
-        out_base_parts.append(df_base)
-        out_enh_parts.append(df_enh)
+    for feature_name, feature_config in strategy.features.items():
 
-    df_base_all = pd.concat(out_base_parts).sort_index()
-    df_enh_all = pd.concat(out_enh_parts).sort_index()
+        func_name = feature_config["func"]
+        args = feature_config.get("args", [])
+        kwargs = feature_config.get("kwargs", {})
 
-    # makni redove gdje indikatori nisu definirani
-    drop_subset = ["SMA_50", "RSI_14", "ATR_14"]
-    df_base_all = df_base_all.dropna(subset=drop_subset)
-    df_enh_all = df_enh_all.dropna(subset=drop_subset)
+        func = getattr(indikatori, func_name)
 
-    df_base_all.to_csv(OUT_BASE, index_label="Date")
-    df_enh_all.to_csv(OUT_ENH, index_label="Date")
+        df[feature_name] = (
+            df.groupby(level="Instrument", group_keys=False)
+              .apply(lambda x: func(*(x[arg] for arg in args), **kwargs))
+        )
 
-    print(f"✅ BASE features spremljeni: {OUT_BASE} | rows={len(df_base_all)} | cols={len(df_base_all.columns)}")
-    print(f"✅ ENH  features spremljeni: {OUT_ENH}  | rows={len(df_enh_all)}  | cols={len(df_enh_all.columns)}")
+    return df
+
+
+#build processed
+
+def build_processed(strategy_name: str):
+
+    strategy = load_strategy(strategy_name)
+
+    print(f"\n⚙️ Building processed data")
+    print(f"Strategy: {strategy.name}")
+    print(f"Timeframe: {strategy.timeframe}")
+
+    df_raw = load_raw(strategy.timeframe)
+
+    # filter po strategiji
+
+    if hasattr(strategy, "instruments") and strategy.instruments:
+
+        print(f"Instruments: {strategy.instruments}")
+
+        df_raw = df_raw.loc[
+            df_raw.index.get_level_values("Instrument").isin(strategy.instruments)
+        ]
+
+        print(f"Filtered rows: {len(df_raw)}")
+
+    else:
+        print("⚠️ No instruments defined → using ALL")
+
+    # feture eng
+
+    df_features = apply_features(df_raw, strategy)
+
+    out_path = DATA_PROCESSED / f"{strategy.name}_{strategy.timeframe}_features.csv"
+
+    df_features.to_csv(out_path)
+
+    print(f"✅ Saved: {out_path}")
+    print(f"Rows: {len(df_features)} | Cols: {len(df_features.columns)}\n")
+
+
+# cli
+
+def main():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--strategy", required=True)
+    args = parser.parse_args()
+
+    build_processed(args.strategy)
 
 
 if __name__ == "__main__":
